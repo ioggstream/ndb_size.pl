@@ -29,12 +29,16 @@ use Getopt::Long;
 # from an existing MySQL database.
 #
 # This involves connecting to a mysql server and throwing a bunch
-# of queries at it.
+# of queries at it - to get table names and sizes. It is also possible
+# to estimate using a database dump
 #
 # We currently estimate sizes for: 4.1, 5.0 and 5.1 to various amounts
 # of accurracy.
 #
 # There is no warranty.
+#
+# Class templates, attributes, getters/setters are created using
+#    the Class::MethodMaker module
 #
 # BUGS
 # ----
@@ -44,8 +48,10 @@ use Getopt::Long;
 # - computes the storage requirements of views (and probably MERGE)
 # - ignores character sets?
 
+# create the Parameter class
+# this class contains the memory requirements
+# for a given mysql releases (eg. 5.0, 5.1, ..)
 package MySQL::NDB::Size::Parameter;
-
 use Class::MethodMaker [
 			scalar => 'name',
 			scalar => 'default',
@@ -56,11 +62,11 @@ use Class::MethodMaker [
 					 mem_total ) ],
 			new    => [ -hash => 'new' ],
 			];
-
 1;
 
+# the Report class contains the report to be printed
+#    to screen via text or html outputter
 package MySQL::NDB::Size::Report;
-
 use Class::MethodMaker [
 			scalar => [ qw( database
 					dsn ) ],
@@ -72,15 +78,23 @@ use Class::MethodMaker [
 			];
 1;
 
+#
+# Column class contains the size of various entries
+#    table entries, and some methods to check if
+#    columns should go on memory or on disk.
+#
+#    Memory sizes may vary on MySQL version, overhead size
+#    and other parameters.
+#
 package MySQL::NDB::Size::Column;
-
 use Class::MethodMaker [
 			new    => [ -hash => 'new' ],
 			scalar => [ qw( name
 					type
 					is_varsize
 					size
-					Key) ],
+					Key
+					dd) ],
 			hash   => 'dm_overhead',
 			scalar => [{ -default => 4 },'align'],
 			scalar => [{ -default => 0 },'null_bits'],
@@ -91,9 +105,9 @@ use Class::MethodMaker [
 #   + additional if bitfield as these are stored in the null bits
 #  if is_varsize, null_bits are in varsize part.
 
-# dm is default DataMemory value. Automatically 4byte aligned
-# ver_dm is DataMemory value for specific versions.
-#   an entry in ver_dm OVERRIDES the dm value.
+# * dm is default DataMemory value. Automatically 4byte aligned
+# * ver_dm is DataMemory value for specific versions.
+# * an entry in ver_dm OVERRIDES the dm value.
 # e.g. if way column stored changed in new version.
 #
 # if is_varsize, dm/ver_dm is in varsized part.
@@ -116,6 +130,8 @@ sub ver_dm
     return $self->{ver_dm}{$ver};
 }
 
+# default DataMemory size
+# still in Column class
 sub dm
 {
     my ($self,$val)= @_;
@@ -124,11 +140,37 @@ sub dm
 	$self->{dm}=
 	    $self->align * POSIX::floor(($val+$self->align-1)/$self->align)
     }
+
+    if ($self->is_ondisk()) {
+	  print STDERR "DEBUG: column ".$self->name()." is ondisk with size: ". $self->size()."\n";
+	  $self->{dd} = $self->size();
+    }
     return $self->{dm};
 }
 
-package MySQL::NDB::Size::Index;
+# return 1 if column can be stored on disk
+# 0 otherwise
+sub is_ondisk { 
+  #my $ret =1;
+  my ($self, $ret) = (@_,1);
+  print STDERR "DEBUG: is_ondisk("
+  .Dumper($self)
+  .")\n";
 
+  #how to decide if a column may go on disk
+  if (defined($self->type())) {
+	 $ret = 0 if defined($self->Key());
+	 $ret = 0 if ($self->type() =~ m/text/);
+	 $ret = 0 if ($self->name() =~ /PART|DATA|DIST|PRI|PK/);
+  }
+  return $ret;
+}
+# end of Column class
+
+#
+# Object containing the size of the indexes
+#
+package MySQL::NDB::Size::Index;
 use Class::MethodMaker [
 			new    => [ -hash => 'new' ],
 			hash   => [ qw( ver_dm
@@ -144,6 +186,10 @@ use Class::MethodMaker [
 			scalar => [ { -default=> 0 },'is_supporting_table' ],
 			];
 
+
+#
+#
+#
 package MySQL::NDB::Size::Table;
 
 # The following are computed by compute_row_size:
@@ -211,10 +257,15 @@ sub table_name
     }
 }
 
+#
+# compute a row size considering:
+#    - column type and size
+#    - datamemory overhead
+#    - mysql versions
 sub compute_row_size
 {
     my ($self, $releases) = @_;
-
+  print STDERR "DEBUG: compute_row_size $releases\n";
     my %row_dm_size;
     my %row_vdm_size;
     my %row_im_size;
@@ -256,14 +307,14 @@ sub compute_row_size
 	    }
 	}
     }
-
+	# consider overhead for keys
     foreach ($self->row_dm_overhead_keys())
     {
 	$row_dm_size{$_}+= $self->row_dm_overhead->{$_}
 	if exists($row_dm_size{$_});
     }
 
-
+	# consider overhead for varchar keys
     foreach ($self->row_vdm_overhead_keys())
     {
 	$row_vdm_size{$_}+= $self->row_vdm_overhead->{$_}
@@ -300,15 +351,13 @@ sub compute_row_size
     foreach my $k (keys %dm_null_bits)
     {
 	$dm_null_bits{$k}=
-	    $self->align * POSIX::floor((ceil($dm_null_bits{$k}/8)+$self->align-1)
-					/$self->align);
+	    $self->align * POSIX::floor((ceil($dm_null_bits{$k}/8)+$self->align-1)/$self->align);
     }
 
     foreach my $k (keys %vdm_null_bits)
     {
 	$vdm_null_bits{$k}=
-	    $self->align * POSIX::floor((ceil($vdm_null_bits{$k}/8)+$self->align-1)
-					/$self->align);
+	    $self->align * POSIX::floor((ceil($vdm_null_bits{$k}/8)+$self->align-1)/$self->align);
     }
 
     # Finally set things
@@ -334,7 +383,7 @@ sub compute_row_size
 sub compute_estimate
 {
     my ($self) = @_;
-
+  print STDERR "compute_estimate\n";
     foreach my $ver (@{$self->dm_versions})
     {
 	$self->dm_rows_per_page_set($ver =>
@@ -401,7 +450,12 @@ sub compute_estimate
 		     )
 	foreach $self->dm_versions;
 }
+# end of Table class
 
+
+#
+# Start main
+#
 package main;
 
 my ($dbh,
@@ -417,7 +471,8 @@ my ($help,
     $debug,
     $format,
     $excludetables,
-    $excludedbs);
+    $excludedbs,
+    $ondisk);
 
 GetOptions('database|d=s'=>\$database,
 	   'hostname=s'=>\$hostname,
@@ -431,6 +486,7 @@ GetOptions('database|d=s'=>\$database,
 	   'help|usage|h!'=>\$help,
 	   'debug'=>\$debug,
 	   'format|f=s'=>\$format,
+		'ondisk|o'=>\$ondisk,
 	   );
 
 my $report= new MySQL::NDB::Size::Report;
@@ -440,7 +496,7 @@ if($help)
     print STDERR "Usage:\n";
     print STDERR "\tndb_size.pl --database=<db name>|ALL [--hostname=<host>] "
 	."[--socket=<socket>] "
-	."[--user=<user>] [--password=<password>] [--help|-h] [--format=(html|text)] [--loadqueries=<file>] [--savequeries=<file>]\n\n";
+	."[--user=<user>] [--password=<password>] [--help|-h] [--ondisk|-d]  [--format=(html|text)] [--loadqueries=<file>] [--savequeries=<file>]\n\n";
     print STDERR "\t--database=<db name> ALL may be specified to examine all "
 	."databases\n";
     print STDERR "\t--hostname=<host>:<port> can be used to designate a "
@@ -452,6 +508,7 @@ if($help)
     print STDERR "\t--excludedbs Comma separated list of database names to skip\n";
     print STDERR "\t--savequeries=<file> saves all queries to the DB into <file>\n";
     print STDERR "\t--loadqueries=<file> loads query results from <file>. Doesn't connect to DB.\n";
+	 print STDERR "\t--ondisk store non-key fields ondisk.\n";
     exit(1);
 }
 
@@ -548,6 +605,8 @@ else
 }
 
 sub do_table {
+print STDERR "DEBUG: do_table(".Dumper($_).")\n";
+
     my $t= shift;
     my $info= shift;
     my %indexes= %{$_[0]};
@@ -559,12 +618,14 @@ sub do_table {
 
     foreach my $colname (keys %$info)
     {
+    print STDERR "DEBUG: analyzing $colname\n";
 	my $col= new MySQL::NDB::Size::Column(name => $colname);
 	my ($type, $size);
 
 	$col->Key($$info{$colname}{Key})
 	    if(defined($$info{$colname}{Key}) &&$$info{$colname}{Key} ne '');
 
+ 
 	$col->null_bits(defined($$info{$colname}{Null})
 			&& $$info{$colname}{Null} eq 'YES');
 
@@ -586,6 +647,10 @@ sub do_table {
 	}
 	$col->type($type);
 	$col->size($size);
+
+  
+  print STDERR "DEBUG: $colname is ".$col->Key() ." and ". $col->type($type)."; ". $col->is_ondisk() ."\n";
+
 
 	if($type =~ /tinyint/)
 	{$col->dm(1)}
@@ -721,7 +786,7 @@ sub do_table {
 				    }
 		  },
 		     \@blobsize);
-	}
+	} # end manage text|blob type
 
 	$col->type($type);
 	$col->size($size);
@@ -1087,6 +1152,9 @@ elsif($format eq 'html')
     $html_out->output();
 }
 
+#
+# Output formatter class, text version
+#
 package MySQL::NDB::Size::Output::Text;
 use Data::Dumper;
 
@@ -1131,17 +1199,20 @@ sub output
 	print "\n";
 	my %dm_totals;
 	my %vdm_totals;
+	my %ddm_totals;
+
 	while(my ($cname, $c)= $t->columns_each())
 	{
 	    $c->type =~ /^([^\(]*)/g;
 	    printf $f.'%20s %9s %5s',
-	    $cname,
-	    $1.(
-		 ( $c->size and not $c->type() =~ /(enum|set)/)
-		 ? '('.$c->size.')'
-		 :'' ),
-	    ($c->is_varsize)? 'Y':' ',
-	    (defined($c->Key))?$c->Key:' ';
+		  $cname,
+		  $1.(
+			( $c->size and not $c->type() =~ /(enum|set)/)
+			? '('.$c->size.')'
+			:'' ),
+		  ($c->is_varsize)? 'Y':' ',
+		  (defined($c->Key))?$c->Key:' ';
+		#print columns, one per version
 	    foreach(@{$r->versions})
 	    {
 		if($c->ver_dm_exists($_))
@@ -1150,6 +1221,7 @@ sub output
 		    if($c->is_varsize())
 		    {
 			$vdm_totals{$_}+= $c->ver_dm($_);
+			$ddm_totals{$_}+= $c->dd();
 		    }
 		    else
 		    {
@@ -1172,6 +1244,10 @@ sub output
 	print "\n";
 	printf $f.'%20s %9s %5s','Varsize Columns DM/Row','','','';
 	printf $v, $vdm_totals{$_} || 0 foreach @{$r->versions};
+	print "\n";
+	# rpolli
+	printf $f.'%20s %9s %5s','OnDisk Columns DM/Row','','','';
+	printf $v, $ddm_totals{$_} || 0 foreach @{$r->versions};
 	print "\n";
 
 
@@ -1502,8 +1578,10 @@ ENDHTML
 
 	my %dm_totals;
 	my %vdm_totals;
+	my %ddm_totals; # ondisk tables
 	while(my ($cname, $c)= $t->columns_each())
 	{
+		  print STDERR "DEBUG: processing string ". $c->type. "\n";
 	    $c->type =~ /^([^\(]*)/g;
 	    my @verinfo;
 	    foreach(@{$r->versions})
@@ -1514,6 +1592,7 @@ ENDHTML
 		    if($c->is_varsize())
 		    {
 			$vdm_totals{$_}+= $c->ver_dm($_);
+			$ddm_totals{$_}+= $c->dd($_);
 		    }
 		    else
 		    {

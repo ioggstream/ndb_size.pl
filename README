@@ -1,0 +1,7 @@
+Revised ndb_size.pl
+===================
+
+Given an existing db or dump, ndb_size.pl estimates its  memory requirements for the ndbengine.
+
+
+Adding some comments and on-disk size to ndb_size.pl
