@@ -464,9 +464,7 @@ if(!$loadqueries)
 {
     my ($host,$port) = split(/:/, $hostname);
     my $dsn = "DBI:mysql:host=$host";
-    if (defined($port)) {
-       $dsn .=";port=$port";
-    }
+    $dsn .=";port=$port" if defined($port);
     $dsn.= ";mysql_socket=$socket" if ($socket);
     $dbh= DBI->connect($dsn, $user, $password) or exit(1);
     $report->dsn($dsn);
