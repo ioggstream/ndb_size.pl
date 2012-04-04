@@ -111,7 +111,8 @@ use Class::MethodMaker [
 # e.g. if way column stored changed in new version.
 #
 # if is_varsize, dm/ver_dm is in varsized part.
-
+# TODO if ondisk, dm should be 0, and the dd should be used instead
+#	see how the varsized part is done...
 sub ver_dm_exists
 {
     my ($self,$ver)= @_;
@@ -141,9 +142,11 @@ sub dm
 	    $self->align * POSIX::floor(($val+$self->align-1)/$self->align)
     }
 
-    if ($self->is_ondisk()) {
+	# On Disk fields occupy 0 bytes in Data Memory
+    if ($self->is_ondisk()) {      
 	  print STDERR "DEBUG: column ".$self->name()." is ondisk with size: ". $self->size()."\n";
 	  $self->{dd} = $self->size();
+	  $self->ver_dm('OnDisk',0);
     }
     return $self->{dm};
 }
@@ -225,6 +228,7 @@ use Class::MethodMaker [
 					row_im_size
 					row_dm_size
 					row_vdm_size
+					row_dd_size
 					row_dm_overhead
 					row_vdm_overhead
 					row_ddm_overhead) ],
@@ -262,11 +266,14 @@ sub table_name
 #    - column type and size
 #    - datamemory overhead
 #    - mysql versions
+#   and
+#    - ondisk row overhead
 sub compute_row_size
 {
     my ($self, $releases) = @_;
   print STDERR "DEBUG: compute_row_size $releases\n";
     my %row_dm_size;
+    my %row_dd_size;
     my %row_vdm_size;
     my %row_im_size;
     my %dm_null_bits;
@@ -280,7 +287,11 @@ sub compute_row_size
 	    $no_varsize++;
 	    foreach my $ver ($self->vdm_versions)
 	    {
-		if($self->columns->{$c}->ver_dm_exists($ver))
+	    if ( ($ver eq 'OnDisk') and $self->columns->{$c}->is_ondisk()) {
+	    	print STDERR "DEBUG: column is $ver add dd_size ";
+	    	$row_dd_size{$ver} +=   $self->columns->{$c}->dd;
+	    }
+		elsif($self->columns->{$c}->ver_dm_exists($ver))
 		{
 		    $row_vdm_size{$ver}+= $self->columns->{$c}->ver_dm($ver);
 		    $vdm_null_bits{$ver}+= $self->columns->{$c}->null_bits();
@@ -294,7 +305,11 @@ sub compute_row_size
 	}
 	foreach my $ver ($self->dm_versions)
 	{
-	    if($self->columns->{$c}->ver_dm_exists($ver))
+		 if ( ($ver eq 'OnDisk') and $self->columns->{$c}->is_ondisk()) {
+ 		    print STDERR "DEBUG: column is $ver add dd_size ";		 	
+	    	$row_dd_size{$ver} +=   $self->columns->{$c}->dd;
+	    }
+	    elsif($self->columns->{$c}->ver_dm_exists($ver))
 	    {
 		next if $self->columns->{$c}->is_varsize;
 		$row_dm_size{$ver}+= $self->columns->{$c}->ver_dm($ver);
@@ -305,8 +320,10 @@ sub compute_row_size
 		$row_dm_size{$ver}+= $self->columns->{$c}->dm||0;
 		$dm_null_bits{$ver}+= $self->columns->{$c}->null_bits()||0;
 	    }
+	    
 	}
     }
+    
 	# consider overhead for keys
     foreach ($self->row_dm_overhead_keys())
     {
@@ -321,6 +338,16 @@ sub compute_row_size
 	if exists($row_vdm_size{$_});
     }
 
+	# TODO consider 8byte total overhead for ondisk row
+	foreach my $ver ($self->dm_versions) {
+		print STDERR "DEBUG: adding 8byte pointer for OnDisk row\n";
+		foreach my $k (%row_dd_size) {
+			print STDERR "DEBUG: found OnDisk row\n";
+			$row_dm_size{$ver} += 8;
+			last;
+		}
+	}
+	
 
     # now we compute size of indexes for dm
     foreach my $i (keys %{$self->indexes})
@@ -375,6 +402,7 @@ sub compute_row_size
 	$row_vdm_size{$k}+=$vdm_null_bits{$k}||0;
     }
 
+	$self->row_dd_size(%row_dd_size);
     $self->row_dm_size(%row_dm_size);
     $self->row_vdm_size(%row_vdm_size);
     $self->row_im_size(%row_im_size);
@@ -574,7 +602,7 @@ else
     $report->database("file:$loadqueries");
 }
 
-$report->versions('4.1','5.0','5.1');
+$report->versions('4.1','5.0','5.1','OnDisk');
 
 my $tables;
 
@@ -615,8 +643,8 @@ print STDERR "DEBUG: do_table(".Dumper($_).")\n";
     my @count= @{$_[1]};
 
     $t->dm_versions($report->versions);
-    $t->vdm_versions('5.1');
-    $t->ddm_versions('5.1');
+    $t->vdm_versions('5.1','OnDisk');
+    $t->ddm_versions('5.1','OnDisk');
 
     foreach my $colname (keys %$info)
     {
@@ -761,11 +789,14 @@ print STDERR "DEBUG: do_table(".Dumper($_).")\n";
 						{ '4.1' => 12,
 						  '5.0' => 12,
 						  '5.1' => 16,
+						  'OnDisk' => 16+8,
 					      },
 						row_vdm_overhead =>
-						{ '5.1' => 8 },
+						{ '5.1' => 8,
+						   'OnDisk' => 0},
 						row_ddm_overhead =>
-						{ '5.1' => 8 },
+						{ '5.1' => 8 ,
+						   'OnDisk' => 8},
 						);
 
 
@@ -792,7 +823,8 @@ print STDERR "DEBUG: do_table(".Dumper($_).")\n";
 
 	$col->type($type);
 	$col->size($size);
-	$t->columns_set( $colname => $col );
+	$t->columns_set( $colname => $col );	
+	
     }
     #print "setting tables: ",$t->schema(), $t->table_name(), $t->name, $t->real_table_name || "" , "\n";
     # Use $t->name here instead of $t->table_name() to avoid namespace conflicts
@@ -905,11 +937,14 @@ print STDERR "DEBUG: do_table(".Dumper($_).")\n";
 						{ '4.1' => 12,
 						  '5.0' => 12,
 						  '5.1' => 16+4,
+						  'OnDisk' => 16+4
 					      },
 						row_vdm_overhead =>
-						{ '5.1' => 8 },
+						{ '5.1' => 8,
+						'OnDisk' => 0},
 						row_ddm_overhead =>
-						{ '5.1' => 8 },
+						{ '5.1' => 8,
+						'OnDisk' => 8},
 						);
 	    do_table($st,
 		     \%idxcols,
@@ -998,9 +1033,10 @@ foreach(@{$tables})
 				        { '4.1' => 12,
 					  '5.0' => 12,
 					  '5.1' => 16,
+					  'OnDisk' => 16
 					  },
-				       row_vdm_overhead => { '5.1' => 8 },
-				       row_ddm_overhead => { '5.1' => 8 },
+				       row_vdm_overhead => { '5.1' => 8, 'OnDisk'=>0 },
+				       row_ddm_overhead => { '5.1' => 8 , 'OnDisk' =>8},
 				       );
 
 
@@ -1219,7 +1255,7 @@ sub output
 	    {
 		if($c->ver_dm_exists($_))
 		{
-		    printf $v, $c->ver_dm($_).(($c->is_varsize)?'*':'');
+		    printf $v, $c->ver_dm($_).(($c->is_varsize)?'*':'').(($c->is_ondisk()?'+':''));
 		    if($c->is_varsize())
 		    {
 			$vdm_totals{$_}+= $c->ver_dm($_);
@@ -1228,12 +1264,14 @@ sub output
 		    else
 		    {
 			$dm_totals{$_}+= $c->ver_dm($_);
+			$ddm_totals{$_}+= $c->dd();
 		    }
 		}
 		else
 		{
 		    printf $v, $c->dm||'N/A';
 		    $dm_totals{$_}+=$c->dm||0;
+		    $ddm_totals{$_}+= $c->dd();
 		}
 	    }
 	    print "\n";
@@ -1573,7 +1611,7 @@ ENDHTML
 
 	# Columns
 	print $self->h3("DataMemory for Columns");
-	print $self->p("* means varsized DataMemory");
+	print $self->p("* means varsized DataMemory, + means ondisk column");
 	print "<table>\n";
 	print $self->th('Column Name','Type','Varsized', 'Key',
 			@{$r->versions});
