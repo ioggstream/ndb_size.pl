@@ -145,7 +145,7 @@ sub dm
 	# On Disk fields occupy 0 bytes in Data Memory
     if ($self->is_ondisk()) {      
 	  print STDERR "DEBUG: column ".$self->name()." is ondisk with size: ". $self->size()."\n";
-	  $self->{dd} = $self->size();
+	  $self->{dd} = $self->{dm};
 	  $self->ver_dm('OnDisk',0);
     }
     return $self->{dm};
@@ -288,7 +288,7 @@ sub compute_row_size
 	    foreach my $ver ($self->vdm_versions)
 	    {
 	    if ( ($ver eq 'OnDisk') and $self->columns->{$c}->is_ondisk()) {
-	    	print STDERR "DEBUG: column is $ver add dd_size ";
+	    	print STDERR "DEBUG: column is $ver add dd_size ". $self->columns->{$c}->{dd};
 	    	$row_dd_size{$ver} +=   $self->columns->{$c}->dd;
 	    }
 		elsif($self->columns->{$c}->ver_dm_exists($ver))
@@ -306,7 +306,7 @@ sub compute_row_size
 	foreach my $ver ($self->dm_versions)
 	{
 		 if ( ($ver eq 'OnDisk') and $self->columns->{$c}->is_ondisk()) {
- 		    print STDERR "DEBUG: column is $ver add dd_size ";		 	
+ 		    print STDERR "DEBUG: column is $ver add dd_size ". $self->columns->{$c}->dd;
 	    	$row_dd_size{$ver} +=   $self->columns->{$c}->dd;
 	    }
 	    elsif($self->columns->{$c}->ver_dm_exists($ver))
@@ -536,7 +536,7 @@ if($help)
     print STDERR "\t--excludedbs Comma separated list of database names to skip\n";
     print STDERR "\t--savequeries=<file> saves all queries to the DB into <file>\n";
     print STDERR "\t--loadqueries=<file> loads query results from <file>. Doesn't connect to DB.\n";
-	 print STDERR "\t--ondisk store non-key fields ondisk.\n";
+	 print STDERR "\t--ondisk (DEFAULT) store non-key fields ondisk.\n";
     exit(1);
 }
 
@@ -679,7 +679,9 @@ print STDERR "DEBUG: do_table(".Dumper($_).")\n";
 	$col->size($size);
 
   
-  print STDERR "DEBUG: $colname is ".$col->Key() ." and ". $col->type($type)."; ". $col->is_ondisk() ."\n";
+  print STDERR "DEBUG: $colname is ". defined $col->Key() ? "key" : ""
+  	 ." and ". $col->type($type) 
+  	 ."; ". $col->is_ondisk() ."\n";
 
 
 	if($type =~ /tinyint/)
@@ -1231,7 +1233,7 @@ sub output
 	my $v= "%10s ";
 
 	# Columns
-	print "DataMemory for Columns (* means varsized DataMemory):\n";
+	print "DataMemory for Columns (* means varsized DataMemory, + means ondisk column):\n";
 	printf $f.'%20s %9s %5s','Column Name','Type','Varsized', 'Key';
 	printf $v, $_ foreach @{$r->versions};
 	print "\n";
