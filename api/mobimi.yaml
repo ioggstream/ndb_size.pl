@@ -61,6 +61,7 @@ paths:
       required: true
       schema:
         $ref: '#/components/schemas/SolutionRequest'
+      example: '%20{%20%22richiesta%22:%20{%20%22from%22:%20%22Milano,%20Via%20Torquato%20Taramelli,%2024%22,%20%22fromX%22:%20%229.19399499%22,%20%22fromY%22:%20%2245.49122488%22,%20%22to%22:%20%22Busto%20Arsizio%20Fs,%20Stazione%22,%20%22toX%22:%20%228.864713%22,%20%22toY%22:%20%2245.615788%22,%20%22date%22:%20%2220/12/2017%22,%20%22when%22:%20%2211:20%22,%20%22options%22:%20[%221%22,%222%22,%223%22,%224%22,%225%22,%226%22],%20%22changeNumber%22:%20%22-1%22,%20%22durationChange%22:%20%22-1%22%20},%20%22lang%22:%20%22it%22%20}'
     - name: maxResult
       in: query
 components:
